@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hello WebGL</title>
+    <meta name="generator" content="BBEdit 10.5" />
+
+    <!-- load matrix manipulation helper methods -->
+    <script type="text/javascript" src="glMatrix_util.js"></script>
+    <script type="text/javascript" src="webgl-utils.js"></script>
+    <script type="text/javascript" src="ReadClawAscii.js"></script>
+    <script type="text/javascript" src="MeshGeometry.js"></script>
+    <script type="text/javascript" src="Mesh.js"></script>
+
+    <!-- define our shaders -->
+    <script id="shader-fs" type="x-shader/x-fragment">
+      precision mediump float;
+
+      uniform vec3 uColormap[256];
+      uniform float uColormapSize;
+      uniform float uColormapLength;
+      uniform float uColorMin;
+      uniform float uColorMax;
+
+      varying float vZ;
+
+      uniform sampler2D uSampler;
+
+      void main(void) {
+          if(vZ<uColorMin){
+            gl_FragColor = texture2D(uSampler, vec2(0.0, 0.5));
+          }else if(vZ>uColorMax){
+            gl_FragColor = texture2D(uSampler, vec2((0.5+uColormapSize-1.0)/uColormapLength, 0.5));
+          }else{
+            float float_index = (vZ-uColorMin)*(uColormapSize-1.0)/(uColorMax-uColorMin);
+            float index = floor(float_index);
+            float t = float_index-index;
+            vec4 low_color = texture2D(uSampler, vec2((0.5+index)/uColormapLength, 0.5));
+            vec4 high_color = texture2D(uSampler, vec2((0.5+index+1.0)/uColormapLength, 0.5));
+            gl_FragColor = mix(low_color, high_color, t);
+          }
+      }
+    </script>
+
+    <script id="shader-vs" type="x-shader/x-vertex">
+      attribute vec3 aVertexPosition;
+
+      uniform mat4 uMVMatrix;
+      uniform mat4 uRotMatrix;
+      uniform mat4 uPMatrix;
+
+      varying float vZ;
+
+      void main(void) {
+          vZ = aVertexPosition.z;
+          gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+      }
+    </script>
+
+    <script>
+         <!-- define Javascript functions for drawing WebGL items -->
+
+        var gl;
+        var patches = new Array();
+        var geometry;
+        var mesh;
+
+        function initWebGLContext(aname) {
+          gl = null;
+          var canvas = document.getElementById(aname);
+          try {
+            // Try to grab the standard context. If it fails, fallback to experimental.
+            gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+          }
+          catch(e) {}
+
+          // If we don't have a GL context, give up now
+          if (!gl) {
+            alert("Unable to initialize WebGL. Your browser may not support it.");
+            gl = null;
+          }
+          gl.viewportWidth = canvas.width;
+          gl.viewportHeight = canvas.height;
+          return gl;
+        }
+        // define the function to initial WebGL and Setup Geometry Objects
+        function initGLScene()
+        {
+            // Initialize the WebGL Context - the gl engine for drawing things.
+            var gl = initWebGLContext("hellowebgl"); // The id of the Canvas Element
+                if (!gl) // if fails simply return
+             {
+                  return;
+             }
+             // succeeded in initializing WebGL system
+             gl.getExtension('OES_standard_derivatives');
+             return gl;
+        }
+
+
+           function getShader(gl, id) {
+                var shaderScript = document.getElementById(id);
+                if (!shaderScript) {
+                    return null;
+                }
+
+                var str = "";
+                var k = shaderScript.firstChild;
+                while (k) {
+                    if (k.nodeType == 3) {
+                        str += k.textContent;
+                    }
+                    k = k.nextSibling;
+                }
+
+                var shader;
+                if (shaderScript.type == "x-shader/x-fragment") {
+                    shader = gl.createShader(gl.FRAGMENT_SHADER);
+                } else if (shaderScript.type == "x-shader/x-vertex") {
+                    shader = gl.createShader(gl.VERTEX_SHADER);
+                } else {
+                    return null;
+                }
+
+                gl.shaderSource(shader, str);
+                gl.compileShader(shader);
+
+                if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                    alert(gl.getShaderInfoLog(shader));
+                    return null;
+                }
+
+                return shader;
+            }
+
+
+            var shaderProgram;
+            var boxShaderProgram;
+
+            function initShaders() {
+                var fragmentShader = getShader(gl, "shader-fs");
+                var vertexShader = getShader(gl, "shader-vs");
+                // main shader
+                shaderProgram = gl.createProgram();
+                gl.attachShader(shaderProgram, vertexShader);
+                gl.attachShader(shaderProgram, fragmentShader);
+                gl.linkProgram(shaderProgram);
+
+                if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                    alert("Could not initialise shaders");
+                }
+                gl.useProgram(shaderProgram);
+
+                //main shader
+                shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+                gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+                shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+                shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+                shaderProgram.rotMatrixUniform = gl.getUniformLocation(shaderProgram, "uRotMatrix");
+                shaderProgram.colormapUniform = gl.getUniformLocation(shaderProgram, "uColormap");
+                shaderProgram.colormapSizeUniform = gl.getUniformLocation(shaderProgram, "uColormapSize");
+                shaderProgram.colormapLengthUniform = gl.getUniformLocation(shaderProgram, "uColormapLength");
+                shaderProgram.colorMinUniform = gl.getUniformLocation(shaderProgram, "uColorMin");
+                shaderProgram.colorMaxUniform = gl.getUniformLocation(shaderProgram, "uColorMax");
+                shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+            }
+
+      var jet = [
+          0.000000,0.000000,0.562500,
+          0.000000,0.000000,0.625000,
+          0.000000,0.000000,0.687500,
+          0.000000,0.000000,0.750000,
+          0.000000,0.000000,0.812500,
+          0.000000,0.000000,0.875000,
+          0.000000,0.000000,0.937500,
+          0.000000,0.000000,1.000000,
+          0.000000,0.062500,1.000000,
+          0.000000,0.125000,1.000000,
+          0.000000,0.187500,1.000000,
+          0.000000,0.250000,1.000000,
+          0.000000,0.312500,1.000000,
+          0.000000,0.375000,1.000000,
+          0.000000,0.437500,1.000000,
+          0.000000,0.500000,1.000000,
+          0.000000,0.562500,1.000000,
+          0.000000,0.625000,1.000000,
+          0.000000,0.687500,1.000000,
+          0.000000,0.750000,1.000000,
+          0.000000,0.812500,1.000000,
+          0.000000,0.875000,1.000000,
+          0.000000,0.937500,1.000000,
+          0.000000,1.000000,1.000000,
+          0.062500,1.000000,0.937500,
+          0.125000,1.000000,0.875000,
+          0.187500,1.000000,0.812500,
+          0.250000,1.000000,0.750000,
+          0.312500,1.000000,0.687500,
+          0.375000,1.000000,0.625000,
+          0.437500,1.000000,0.562500,
+          0.500000,1.000000,0.500000,
+          0.562500,1.000000,0.437500,
+          0.625000,1.000000,0.375000,
+          0.687500,1.000000,0.312500,
+          0.750000,1.000000,0.250000,
+          0.812500,1.000000,0.187500,
+          0.875000,1.000000,0.125000,
+          0.937500,1.000000,0.062500,
+          1.000000,1.000000,0.000000,
+          1.000000,0.937500,0.000000,
+          1.000000,0.875000,0.000000,
+          1.000000,0.812500,0.000000,
+          1.000000,0.750000,0.000000,
+          1.000000,0.687500,0.000000,
+          1.000000,0.625000,0.000000,
+          1.000000,0.562500,0.000000,
+          1.000000,0.500000,0.000000,
+          1.000000,0.437500,0.000000,
+          1.000000,0.375000,0.000000,
+          1.000000,0.312500,0.000000,
+          1.000000,0.250000,0.000000,
+          1.000000,0.187500,0.000000,
+          1.000000,0.125000,0.000000,
+          1.000000,0.062500,0.000000,
+          1.000000,0.000000,0.000000,
+          0.937500,0.000000,0.000000,
+          0.875000,0.000000,0.000000,
+          0.812500,0.000000,0.000000,
+          0.750000,0.000000,0.000000,
+          0.687500,0.000000,0.000000,
+          0.625000,0.000000,0.000000,
+          0.562500,0.000000,0.000000,
+          0.500000,0.000000,0.000000];
+
+
+        // create our basic model and view matrix
+        var mvMatrix = mat4.create();
+        var rotMatrix = mat4.create();
+        var mvMatrixStack = [];
+        // create our projection matrix for projecting from 3D to 2D.
+        var pMatrix = mat4.create();
+        //other unifomrs
+        var dirLight = [0.0, -1.0, 0.0];
+        var shaderType = 0;
+        var textureType = 0;
+        var ni=32;
+        var nj=16;
+        var ambientWeight=0.5;
+        var diffuseWeight=0.5;
+        var phongWeight=0.5;
+        var useBumpMap=false;
+        var nShiny=10;
+        var colormap = [0.0,1.0,0.0,
+                        0.0,0.0,1.0];
+        var colorMin=0.0;
+        var colorMax=1.0;
+        var colormapTexture;
+
+         function mvPushMatrix() {
+                var copy = mat4.create();
+                mat4.set(mvMatrix, copy);
+                mvMatrixStack.push(copy);
+            }
+
+            function mvPopMatrix() {
+                if (mvMatrixStack.length == 0) {
+                    throw "Invalid popMatrix!";
+                }
+                mvMatrix = mvMatrixStack.pop();
+            }
+
+        function setMatrixUniforms()
+        {
+                gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+                gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+                gl.uniformMatrix4fv(shaderProgram.rotMatrixUniform, false, rotMatrix);
+                gl.uniform1f(shaderProgram.colormapSizeUniform, colormapTexture.length);
+                gl.uniform1f(shaderProgram.colormapLengthUniform, colormapTexture.data.length/4);
+                gl.uniform1f(shaderProgram.colorMaxUniform, colorMax);
+                gl.uniform1f(shaderProgram.colorMinUniform, colorMin);
+        }
+
+
+        // create and initialize our geometry objects
+        var gridVertexPositionBuffer;
+        var gridVertexTextureCoordBuffer;
+        var gridVertexIndexBuffer;
+        var gridVertexNormalBuffer;
+        var radius = 1.27374; //1000 km
+
+        function reloadGeometry(in_patches)
+        {
+            patches = in_patches;
+            mesh = new Mesh(patches);
+            geometry = new MeshGeometry(gl,mesh);
+            colorMax = mesh.max_value;
+            colorMin = mesh.min_value;
+        }
+
+
+        // Initialize our texture data and prepare it for rendering
+        function initTextures()
+        {
+          colormapTexture = gl.createTexture();
+          updateColormap(colormap);
+        }
+
+        function updateColormap(colormap){
+            colormapTexture.data = new Uint8Array(4*Math.pow(2,Math.ceil(Math.log2(colormap.length/3))));
+            colormapTexture.length = colormap.length/3;
+            for(var i=0;i<colormap.length/3;i++){
+                colormapTexture.data[4*i+0] = Math.round(255*colormap[3*i+0]);
+                colormapTexture.data[4*i+1] = Math.round(255*colormap[3*i+1]);
+                colormapTexture.data[4*i+2] = Math.round(255*colormap[3*i+2]);
+                colormapTexture.data[4*i+3] = 255;
+            }
+            gl.bindTexture(gl.TEXTURE_2D, colormapTexture);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, colormapTexture.data.length/4, 1, 0,
+                          gl.RGBA, gl.UNSIGNED_BYTE, colormapTexture.data);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+         }
+
+        function handleLoadedTexture(texture)
+        {
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+        }
+
+
+        var xRot = 0;
+        var yRot = 0;
+        var zRot = 0;
+        var scroll = 0;
+        var enableBox = false;
+        function initListeners(){
+          var canvas = document.getElementById("hellowebgl");
+          var xPrev, yPrev;
+          var rotating = false;
+          var panning = false;
+          canvas.addEventListener("mousedown",function(e){
+              xPrev = e.pageX;
+              yPrev = e.pageY;
+              rotating = e.button==0;
+              panning = e.button==2;
+          },false);
+          canvas.addEventListener("mouseup",function(e){
+              rotating=false;
+              panning=false;
+          },false);
+          canvas.addEventListener("mouseleave",function(e){
+              rotating=false;
+              panning=false;
+          },false);
+          canvas.addEventListener("mousemove",function(e){
+              if(rotating){
+                  var xDelta = e.pageX-xPrev;
+                  var yDelta = e.pageY-yPrev;
+                  xPrev = e.pageX;
+                  yPrev = e.pageY;
+                  xRot += yDelta*360/canvas.height;
+                  yRot += xDelta*360/canvas.width;
+                  //limit rotation
+                  if(xRot>90){
+                      xRot = 90;
+                  }else if(xRot<-90){
+                      xRot = -90;
+                  }
+              }
+              if(panning){
+
+              }
+          },false);
+
+          canvas.addEventListener("wheel",function(e){
+              scroll += e.deltaY/1000;
+          },false)
+
+          document.getElementById('file').addEventListener('change',function(evt){
+              var file = evt.target.files[0];
+              ReadClawAscii.readFile(file,reloadGeometry);
+          },false)
+        }
+
+        //Initialize everything for starting up a simple webGL application
+        function startHelloWebGL()
+        {
+           // attach 'Handler' functions to handle events generated by the canvas.
+           // for when the browser is resized or closed.
+
+           // first initialize webgl components
+           var gl = initGLScene();
+
+           // now build basic geometry objects.
+           initShaders();
+           reloadGeometry(patches);
+           initTextures(colormap);
+
+           gl.clearColor(0.4,0.4,0.4,1.0);
+           gl.enable(gl.DEPTH_TEST);
+           // Draw the Scene
+           Frames();
+           // If doing an animation need to add code to rotate our geometry
+
+           initListeners();
+        }
+
+        // This function draws a basic webGL scene
+        // first it clears the framebuffer.
+        // then we define our View positions for our camera using WebGL matrices.
+        // OpenGL has convenience methods for this such as glPerspective().
+        // finally we call the gl draw methods to draw our defined geometry objects.
+
+        function drawScene() {
+            gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            if(!geometry.empty) {
+                mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 100.0, pMatrix);
+
+                mat4.identity(mvMatrix);
+
+                mat4.translate(mvMatrix, [0.0, 0.0, -5.0]);
+
+                var scale = 1.0*Math.pow(10,-scroll);
+                mat4.scale(mvMatrix, [scale,scale,scale]);
+
+                mat4.identity(rotMatrix);
+                mat4.rotate(rotMatrix, xRot/180.0*3.1415, [1, 0, 0]);
+
+                mat4.rotate(rotMatrix, yRot/180.0*3.1415, [0, 1, 0]);
+
+                //rotate to graphics coords
+                mat4.rotate(rotMatrix, -90/180.0*3.1415, [1, 0, 0]);
+
+                mat4.multiply(mvMatrix,rotMatrix,mvMatrix);
+                //move to center
+                mat4.translate(mvMatrix, [-(mesh.tree.xmin+mesh.tree.xmax)/2.0, -(mesh.tree.ymin+mesh.tree.ymax)/2.0, 0.0]);
+
+
+
+                gl.useProgram(shaderProgram);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, geometry.positionBuffer);
+                gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, geometry.positionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, colormapTexture);
+                gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, geometry.vertexIndexBuffer);
+                setMatrixUniforms();
+                var ext = gl.getExtension('OES_element_index_uint');
+
+                gl.drawElements(gl.TRIANGLES, geometry.vertexIndexBuffer.numItems, gl.UNSIGNED_INT, 0);
+            }
+        }
+
+
+            var lastTime = 0;
+            var sun_pos = 0;
+
+            function animate() {
+                var timeNow = new Date().getTime();
+                if (lastTime != 0) {
+                    var elapsed = timeNow - lastTime;
+                    //xRot=50;
+
+                    var rate = 8; //rpm
+                    sun_pos+=360*rate*elapsed/(60*1000);
+                    sun_pos=sun_pos%360;
+
+                    var sun_rads = sun_pos/180.0*3.1415;
+                    dirLight = [-Math.sin(sun_rads),0,-Math.cos(sun_rads)];
+                }
+                lastTime = timeNow;
+            }
+
+
+            function Frames() {
+                requestAnimFrame(Frames);
+                drawScene();
+                animate();
+            }
+    </script>
+  </head>
+
+  <!-- declare the "body" of the HTML document-->
+  <!-- the onload attribute specifies a javascript function to execute when the body tag is loaded into the browser -->
+
+  <body onload="startHelloWebGL()">
+    <h1>Surface Plot!</h1>
+
+    <!-- embed the HTML5 Canvas Drawing object on the page.-->
+    <!-- Name the canvas 'hellowebgl' for the javascript code. -->
+    <canvas id="hellowebgl" width="640" height="480">
+      If you're seeing this your web browser doesn't support the &lt;canvas>&gt;
+      element. Ouch!
+    </canvas>
+    <br />
+    <input type="file" id="file" />
+  </body>
+</html>
